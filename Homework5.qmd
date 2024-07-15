@@ -1,0 +1,49 @@
+---
+title: "ST558 - Homework 5: Models with caret"
+authors: Laraib Azmat
+date: July 13, 2024
+format: html
+---
+
+###Initial library read-in 
+```{r, warning = FALSE, message = FALSE}
+#implemented silencing the warnings based on feedback 
+library(readr)
+library(readxl)
+library(dplyr)
+library(caret)
+```
+
+###Data read-in
+```{r}
+#reading in the csv 
+heart_data <- read_csv("./data/heart.csv")
+
+#changing the data type for the heart disease column 
+heart_data$HeartDisease <- as.factor(heart_data$HeartDisease)
+
+#dropping the ST_Slope variable 
+heart_data <- heart_data |>
+              select(!ST_Slope)
+
+#creating a list of the variables to be run through the `dummyVars` function
+dummy_list <- c("ChestPainType", "RestingECG", "ExerciseAngina")
+
+#creating a temporary data set for the dummy function 
+heart_dummy <- heart_data |>
+               select(Age, ChestPainType, RestingECG, ExerciseAngina)
+
+#dummyfying the data 
+heart_dummy <- dummyVars(" ~ .", data = heart_dummy)
+
+#using predict to create new columns 
+heart_predict <- as_tibble(data.frame(predict(heart_dummy, newdata = heart_data)))
+heart_predict
+
+#combining the data into one object and dropping the character variables
+heart_data2 <- bind_cols(heart_data, heart_predict)
+heart_data2 <- heart_data2 |>
+               select(!dummy_list)
+heart_data2
+```
+
