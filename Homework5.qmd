@@ -5,19 +5,48 @@ date: July 13, 2024
 format: html
 ---
 
-###Initial library read-in 
+###   Initial Library Read-in
+
 ```{r, warning = FALSE, message = FALSE}
 #implemented silencing the warnings based on feedback 
 library(readr)
 library(readxl)
 library(dplyr)
 library(caret)
+library(randomForest)
 ```
 
-###Data read-in
+##    Task 1: Conceptual Questions
+
+1.  What is the purpose of using cross-validation when fitting a random forest model?
+
+  > Cross-validation helps make sure that the model obtains similar results for every branch. 
+
+2.  Describe the bagged tree algorithm
+
+  >  Bagged tree algorithm constructs numerous decision trees of the training data by using random sampling with replacement and averages the resulting predictions which reduces the variance. 
+
+3.  What is meant by a general linear model?
+
+  > It is simply a generalized form of a lineral model that includes both categorical and continuous variables
+
+4.  When fitting a multiple linear regression model, what does adding an interaction term do? That is, what does it allow the model to do differently as compared to when it is not included in the model?
+
+  > Adding an ineteraction term provides the information regarding predictors that depend on each other. If y cannot happen without x, adding an interaction term will ensure that wholly additive information does not overtake the data.  
+
+5.  Why do we split our data into a training and test set?
+
+  > The idea is to fit competing models on the training set of data and get an idea of how well the model will generalize when applied to the test set. It also saves from doing computation over large data sets. 
+
+## Task 2: Fitting Models
+
+###   Quick EDA/Data Preparation
 ```{r}
 #reading in the csv 
 heart_data <- read_csv("./data/heart.csv")
+
+#checking the format of the data
+spec(heart_data)
 
 #changing the data type for the heart disease column 
 heart_data$HeartDisease <- as.factor(heart_data$HeartDisease)
@@ -26,24 +55,260 @@ heart_data$HeartDisease <- as.factor(heart_data$HeartDisease)
 heart_data <- heart_data |>
               select(!ST_Slope)
 
+#viewing the corrected data
+heart_data
+```
+#### Data prep for kNN through adding dummy columns
+```{r}
 #creating a list of the variables to be run through the `dummyVars` function
 dummy_list <- c("ChestPainType", "RestingECG", "ExerciseAngina")
 
 #creating a temporary data set for the dummy function 
 heart_dummy <- heart_data |>
-               select(Age, ChestPainType, RestingECG, ExerciseAngina)
+               select(ChestPainType, RestingECG, ExerciseAngina)
 
 #dummyfying the data 
 heart_dummy <- dummyVars(" ~ .", data = heart_dummy)
 
 #using predict to create new columns 
 heart_predict <- as_tibble(data.frame(predict(heart_dummy, newdata = heart_data)))
-heart_predict
 
+#adjusting the column type for later use
+heart_predict <- heart_predict |>
+                 mutate(across(where(is.double), as.factor))
+```
+
+```{r}
 #combining the data into one object and dropping the character variables
 heart_data2 <- bind_cols(heart_data, heart_predict)
+
 heart_data2 <- heart_data2 |>
-               select(!dummy_list)
+               select(!all_of(dummy_list))
+           
 heart_data2
 ```
 
+####   Splitting the data
+```{r}
+#setting up to split the data into two for later use as training and testing 
+train <- sample(1:nrow(heart_data), size = nrow(heart_data)*0.6)
+test <- setdiff(1:nrow(heart_data), train)
+
+#subsetting the data set
+heart_train <- heart_data[train, ]
+heart_test <- heart_data[test, ]
+
+#repeating with dummy data
+dummy_train <- heart_data2[train, ]
+dummy_test <- heart_data2[test, ]
+```
+
+#### Quick EDA
+```{r}
+#quick count of different variables 
+heart_data |>
+  count(HeartDisease, ChestPainType, Sex)
+
+#summarizing the data
+summary(heart_data)
+
+#plotting resting heart rate against heart disease
+ggplot(data = heart_data, mapping = aes(x = RestingBP, colour = HeartDisease)) +
+   geom_histogram(binwidth = 0.1)
+
+#plotting resting age against heart diseases 
+ggplot(heart_data, aes(Age, fill = HeartDisease)) +
+   geom_bar(position = "dodge")
+
+#plotting resting age against heart max heart rate 
+ggplot(heart_data, aes(Cholesterol, MaxHR)) +
+  geom_smooth(method = "lm") 
+
+#summarizing based on whether someone has heart disease at a given age
+table(heart_data$HeartDisease, heart_data$Age)
+```
+
+
+### kNN
+```{r}
+#setting up the grid to be used later in `tuneGrid`
+k <- expand.grid(k = 1:40)
+
+#setting up the 
+trainctrl <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
+
+set.seed(478)
+
+#training the kNN model
+knn_fit <- train(ChestPainTypeASY ~., 
+                 data = dummy_train, 
+                 method = "knn",
+                 preProcess = c("center", "scale"),
+                 trControl=trainctrl,
+                 tuneGrid = k,
+                 tuneLength = 10)
+```
+
+```{r}
+#running the fit
+knn_fit
+```
+
+```{r}
+#running the model using test data
+knn_pred <- predict(knn_fit, newdata = dummy_test)
+
+#checking the accuracy of the sample results
+knn_pred2 <- postResample(predict(knn_fit, newdata = dummy_test), dummy_test$ChestPainTypeASY)
+```
+
+```{r}
+#checking how well the chosen model does on the test data set
+confusionMatrix(knn_pred, dummy_test$ChestPainTypeASY)
+```
+
+
+### Logistic Regression
+
+#### Setting up logistic regression models
+```{r}
+#model 1 - using just the heart disease and chest pain type predictors
+glm_mod1 <- train(HeartDisease ~ ChestPainType,
+  data = heart_train,
+  method = "glm",
+  family = binomial,
+  preProcess = c("center", "scale"),
+  trControl = trainctrl)
+
+#model 2 - using just the heart disease and whether pain while exercising exists
+glm_mod2 <- train(HeartDisease ~ ExerciseAngina,
+  data = heart_train,
+  method = "glm",
+  family = binomial,
+  preProcess = c("center", "scale"), 
+  trControl = trainctrl)
+
+#model 3 - combines model of previous the variables
+glm_mod3 <- train(HeartDisease ~ ChestPainType + ExerciseAngina,
+  data = heart_train,
+  method = "glm",
+  family = binomial,
+  preProcess = c("center", "scale"),
+  trControl = trainctrl)
+```
+
+#### Results
+```{r}
+#showing results in a combined set ast shown in the notes
+rbind(c("Mod1", glm_mod1$results[c("Accuracy", "Kappa")]),
+      c("Mod2", glm_mod2$results[c("Accuracy", "Kappa")]),
+      c("Mod3", glm_mod3$results[c("Accuracy", "Kappa")])
+      )
+
+#model 3 is the most accurate one
+summary(glm_mod3)
+```
+#### Running model 3 on test set 
+```{r}
+#running the model using test data
+glm_pred <- predict(glm_mod3, newdata = heart_test)
+
+#checking the accuracy of the sample results
+glm_pred2 <- postResample(predict(glm_mod3, newdata = heart_test), heart_test$HeartDisease)
+glm_pred2
+```
+
+```{r}
+#checking how well the chosen model does on the test data set
+confusionMatrix(glm_pred, heart_test$HeartDisease)
+```
+
+### Tree Models
+
+#### Classification tree model
+```{r}
+#setting up the cp sequence 
+cp <- expand.grid(cp = seq(0, 0.1, 0.001))
+
+#building the model with classification tree model and training it on the train data set
+class_tree <- train(HeartDisease ~ Age + Sex + MaxHR + ExerciseAngina, 
+                 data = heart_train, 
+                 method = "rpart",
+                 preProcess = c("center", "scale"),
+                 tuneGrid = cp,
+                 trControl = trainctrl)
+
+#running the model
+class_tree
+```
+
+#### Random forest 
+```{r}
+#setting up mtry sequence with 11 as the number of predictors
+mtry <- expand.grid(mtry = seq(1:11))
+
+#building the model with random forest model and training it on the train data set
+rand_tree <- train(HeartDisease ~ ., 
+                 data = heart_train, 
+                 method = "rf",
+                 preProcess = c("center", "scale"),
+                 tuneGrid = mtry,
+                 trControl = trainctrl)
+
+#running the model
+rand_tree
+```
+
+#### Boosted tree
+```{r}
+#setting up a grid with defined specifications
+mtryGrid <- expand.grid(interaction.depth = c(1, 2, 3),
+                    #not sure how this was meant to be interpreted so kept it as whole numbers rather than a sequence
+                    n.trees = c(25, 50, 100, 200),
+                    n.minobsinnode = 10,
+                    shrinkage = 0.1)
+
+#building the model with boosted tree model and training it on the train data set
+boost_tree <- train(HeartDisease ~ ., 
+                 data = heart_train, 
+                 method = "gbm",
+                 preProcess = c("center", "scale"),
+                 tuneGrid = mtryGrid,
+                 trControl = trainctrl, 
+                 verbose = FALSE)
+
+#running the model
+boost_tree
+```
+
+#### Applying to test data
+```{r}
+#running the built models over testing data
+class_pred <- predict(class_tree, newdata = heart_test)
+
+rand_pred <- predict(rand_tree, newdata = heart_test)
+
+boost_pred <- predict(boost_tree, newdata = heart_test)
+```
+
+
+```{r}
+#running the test data with confusion matrix
+confusionMatrix(class_pred, heart_test$HeartDisease)
+```
+
+
+```{r}
+#running the test data with confusion matrix
+confusionMatrix(rand_pred, heart_test$HeartDisease)
+```
+
+
+```{r}
+#running the test data with confusion matrix
+confusionMatrix(boost_pred, heart_test$HeartDisease)
+```
+
+
+### Wrap up
+  > When comparing the results, the accuracy of the kNN test data is hands down the best out of all the other methods. 
